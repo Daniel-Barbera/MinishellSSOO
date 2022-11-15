@@ -8,6 +8,7 @@
 #include <sys/wait.h> // waitpid()
 #include <sys/types.h> // pid_t
 #include <sys/stat.h> 
+#include <errno.h> // errno
 #include "parser.h"
 // Constant definitions
 #define BACKGROUND_JOBS_MAX 10
@@ -18,73 +19,105 @@
 #define RED "\x1b[31m"
 #define RESET "\x1b[0m"
 
-// Function declarations
 // Shell prompt helpers
+
 void print_prompt();
 void print_color(FILE * stream, char * color, char * string);
 char * polite_directory_format(char * name);
+
 // Signal handlers
+
 void sigint_handler(int sig);
 void sigchld_handler(int sig);
+
 // Shell helpers
+
 void parse_shell_args(int argc, char ** argv);
+bool set_redirection_variables(tline * line);
+bool cd_or_exit_are_present(tline * line);
 void parse_tcommand_to_string(tcommand * command, char * buffer);
 void execute_commands(tcommand ** commands);
+background_job execute_commands_in_background(tcommand ** commands);
+void close_redirection_files();
 void kill_job(pid_t pid);
+
 // Shell commands
+
 void cd(char * path);
 void _umask(char * mask);
-void background(tcommand ** commands);
 void foreground(pid_t pid);
 void jobs();
 
 // Type definitions
+/** PID and string representation of a job */
 typedef struct {
-    pid_t pid;
-    char * command;
+  pid_t pid;
+  char * command;
 } background_job;
 
 // Global variables
-pid_t current_pid;                           // PID of the current process being executed by the shell
-background_job background_jobs[BACKGROUND_JOBS_MAX];
-size_t background_jobs_idx = 0;              // Index of the next available position in background_jobs
-bool extended_support = false;               // Flag to indicate if other shell commands should be executed
+background_job background_jobs[BACKGROUND_JOBS_MAX]; // List of background jobs
+size_t background_jobs_idx = 0;                      // Index of the next available position in background_jobs
+bool extended_support = false;                       // Flag to indicate if other shell commands should be executed
 // Variables for output redirection
-FILE * input_file;                    // File to redirect input from
-FILE * output_file;                   // File to redirect output to
-FILE * error_file;                    // File to redirect error to
+FILE * input_file;                                   // File to redirect input from
+FILE * output_file;                                  // File to redirect output to
+FILE * error_file;                                   // File to redirect error to
 
 int main(int argc, char *argv[]) {
   char input_buffer[PATH_MAX];
-  tline * tline;
-  tcommand * tcommands; 
-  tcommand command;
+  tline * line;
 
-  input_file = stdin;
-  output_file = stdout;
-  error_file = stderr;
   parse_shell_args(argc, argv);
   signal(SIGINT, sigint_handler);
   signal(SIGCHLD, sigchld_handler);
   print_prompt();
   while (fgets(input_buffer, PATH_MAX, stdin)) {
-    tline = tokenize(input_buffer);
-    if (tline->ncommands > 0) {
-      tcommands = tline->commands;
-      if (tline->background) {
-        for (int i = 0; i < tline->ncommands; i++) {
-          background(tcommands);
-        }
-      } else {
-        execute_commands(tcommands);
+    line = tokenize(input_buffer);
+    // line is a list of tcommands. It also has information about the input, output and error redirection.
+    // line->redirect_input is the file to redirect input from. If it is enabled, the first command will read from that file.
+    // line->redirect_output is the file to redirect output to. If it is enabled, the last command will write to that file.
+    // line->redirect_error is the file to redirect error to. If it is enabled, the last command will write to that file.
+    // line->background is a flag to indicate if the chain of commands should be executed in background.
+    // line->ncommands is the number of commands in the chain.
+    // line->commands is the list of commands.
+    // line->commands[i] is the i-th command in the chain.
+    // line->commands[i].filename is the command.
+    // line->commands[i].argv is the list of arguments.
+    // line->commands[i].argc is the number of arguments.
+    // line->commands[i].argv[j] is the j-th argument.
+
+    // Set redirection variables
+    set_redirection_variables(line);
+    // If the line is empty, continue
+    if (line == NULL) {
+      print_prompt();
+      continue;
+    }
+    // If the line is a comment, continue
+    if (line->commands[0].filename[0] == '#') {
+      print_prompt();
+      continue;
+    }
+    // If there is more than one command, communicate them with a pipe, unless "cd" or "exit" is one of them
+    if (line->ncommands > 1) {
+      if(cd_or_exit_are_present(line)) {
+        print_color(error_file, RED, "msh: cd and exit cannot be used with pipes");
         print_prompt();
+        continue;
+      }
+      else {
+        execute_commands(line->commands);
       }
     }
+    close_redirection_files();
   }
   return 0;
 }
 
-// Shell prompt helpers
+// Shell prompt helpers 
+
+/** Print the msh> prompt */
 void print_prompt() {
   char prompt[PATH_MAX], 
        hostname[HOST_NAME_MAX];
@@ -97,12 +130,13 @@ void print_prompt() {
   print_color(stdout, BLUE, polite_directory_format(prompt));
   printf(" msh> ");
 }
+// Print a string in a given color to a stream.
 void print_color(FILE * stream, char * color, char * string) {
   fprintf(stream, "%s%s%s", color, string, RESET);
 }
+/** https://github.com/bminor/bash/blob/fb0092fb0e7bb3121d3b18881f72177bcb765491/general.c
+ *  Takes a path string, and if the environment variable HOME is part of it, replaces the HOME part with "~". */
 char * polite_directory_format(char * name) {
-  // Del código fuente de Bash.
-  // https://github.com/bminor/bash/blob/fb0092fb0e7bb3121d3b18881f72177bcb765491/general.c
   char * home = getenv("HOME");
   static char tdir[PATH_MAX];
   int length;
@@ -120,9 +154,14 @@ char * polite_directory_format(char * name) {
 }
 
 // Signal handlers
+
+/** Handles SIGINT: ignore, flush and print prompt */ 
 void sigint_handler(int sig) {
+  fflush(stdin);
   print_prompt();
 }
+/**  Handles SIGCHLD: remove terminated background jobs from the list,
+ *   and print a message if the job was terminated by a signal. */
 void sigchld_handler(int sig) {
   int status;
   pid_t pid;
@@ -141,19 +180,70 @@ void sigchld_handler(int sig) {
 }
 
 // Shell helpers
+
+/** Enable extended mode if the "-e" flag is present in the arguments. */
 void parse_shell_args(int argc, char ** argv) {
   if (argc > 1) {
     for (size_t i = 1; i < argc; i++) {
-      if (strcmp(argv[i], "-s") == 0) {
+      if (strcmp(argv[i], "-e") == 0) {
         extended_support = true;
       }
     }
   }
   if (!extended_support) {
-    print_color(stdout, YELLOW, "WARNING: the shell has been initialized without the -s option.\n");
+    print_color(stdout, YELLOW, "WARNING: the shell has been initialized without the -e option.\n");
     print_color(stdout, YELLOW, "Only the commands 'cd', 'exit', 'fg', 'jobs' and 'umask' will be available.\n");
   }
 }
+/** Set input, output and error redirection. 
+ *  If they're not enabled, reset them to stdin, stdout and stderr. */ 
+bool set_redirection_variables(tline * line) {
+  FILE * file;
+
+  input_file = stdin;
+  output_file = stdout;
+  error_file = stderr;
+  if (line->redirect_input) {
+    file = fopen(line->redirect_input, "r");
+    if (file == NULL) {
+      print_color(error_file, RED, line->redirect_input);
+      print_color(error_file, RED, ": ");
+      print_color(error_file, RED, strerror(errno));
+      return false;
+    }
+    input_file = file;
+  }
+  if (line->redirect_output) {
+    file = fopen(line->redirect_output, "w");
+    if (file == NULL) {
+      print_color(error_file, RED, line->redirect_output);
+      print_color(error_file, RED, ": ");
+      print_color(error_file, RED, strerror(errno));
+      return false;
+    }
+    output_file = file;
+  }
+  if (line->redirect_error) {
+    file = fopen(line->redirect_error, "w");
+    if (file == NULL) {
+      print_color(error_file, RED, line->redirect_error);
+      print_color(error_file, RED, ": ");
+      print_color(error_file, RED, strerror(errno));
+      return false;
+    }
+    error_file = file;
+  }
+}
+/**  Determines if the line contains the commands "cd" or "exit" */
+bool cd_or_exit_are_present(tline * line) {
+  for (size_t i = 0; i < line->ncommands; i++) {
+    if (strcmp(line->commands[i].filename, "cd") == 0 || strcmp(line->commands[i].filename, "exit") == 0) {
+      return true;
+    }
+  }
+  return false;
+}
+/** Parse a tcommand to string to display it when jobs() is called */ 
 void parse_tcommand_to_string(tcommand * command, char * buffer) {
   size_t length; 
 
@@ -168,51 +258,22 @@ void parse_tcommand_to_string(tcommand * command, char * buffer) {
     strcat(buffer, command->argv[i]);
   }
 }
-void execute_command(tcommand * command) {
-  char error_message[FILENAME_MAX + 30];
-
-  if (strcmp(command->filename, "cd") == 0) {
-    cd(command->argv[1]);
-  } else if (strcmp(command->filename, "umask") == 0) {
-    _umask(command->argv[0]);
-  } else if (strcmp(command->filename, "jobs") == 0) {
-    jobs();
-  } else if (strcmp(command->filename, "fg") == 0) {
-    foreground(atoi(command->argv[1]));
-  } else if (strcmp(command->filename, "exit") == 0) {
-    exit(0);
-  } else {
-    if (extended_support) {
-      // try to execute the command as a linux command
-      pid_t pid = fork();
-    } else {
-      sprintf(error_message, "msh: command not found: %s", command->filename);
-      print_color(error_file, YELLOW, "Consider using the -s option to enable extended support.\n");
-      print_color(error_file, RED, error_message);
-    }
+/** Close redirection files if they're not stdin, stdout or stderr */
+void close_redirection_files() {
+  if (input_file != stdin) {
+    fclose(input_file);
   }
-}
-
-void kill_job(pid_t pid) {
-  bool element_found = false;
-  for (size_t i = 0; i < background_jobs_idx && !element_found; i++) {
-    element_found = background_jobs[i].pid == pid;
-    if (element_found) {
-      free(background_jobs[i].command);
-      if (i == background_jobs_idx) {
-        background_jobs_idx--;
-      } else {
-        while (i < background_jobs_idx) {
-          background_jobs[i] = background_jobs[i + 1];
-          i++;
-        }
-        background_jobs_idx--;
-      }
-    }
+  if (output_file != stdout) {
+    fclose(output_file);
+  }
+  if (error_file != stderr) {
+    fclose(error_file);
   }
 }
 
 // Shell commands
+
+/** Change directory */
 void cd(char * path) {
   if (path == NULL) {
     chdir(getenv("HOME"));
@@ -220,45 +281,7 @@ void cd(char * path) {
     chdir(path);
   }
 }
-
-void _umask (char * mask) {
-  mode_t mask_value;
-  char mask_string[4];
-
-  if (mask != NULL) {
-    mask_value = strtol(mask, NULL, 8);
-    umask(mask_value);
-    return;
-  } else {
-    mask_value = umask(022);
-    umask(mask_value);
-    sprintf(mask_string, "%03o", mask_value);
-    print_color(output_file, WHITE, mask_string);       
-  }
-}
-
-void background(tcommand ** command) {
-  if (background_jobs_idx + 1 == BACKGROUND_JOBS_MAX) {
-    print_color(error_file, RED, "Error: exceeded the maximum number of background jobs");
-    return;
-  }
-  pid_t pid = fork();
-  if (pid == 0) {
-    // Child process
-    signal(SIGINT, SIG_DFL);
-    tline * tline = tokenize(command);
-    exit(0);
-  } else {
-    // Parent process
-    background_jobs[background_jobs_idx].pid = pid;
-    parse_tcommand_to_string(command, background_jobs[background_jobs_idx].command);
-    ++background_jobs_idx;
-  }
-}
-void foreground(pid_t pid) {
-  int status;
-  waitpid(pid, &status, 0);
-}
+/** Display all active jobs */
 void jobs() {
   for (size_t i = 0; i < background_jobs_idx; i++) {
     printf("[%d] %s\n", background_jobs[i].pid, background_jobs[i].command);
