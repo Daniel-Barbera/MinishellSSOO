@@ -67,7 +67,7 @@ FILE * error_file;                                   // File to redirect error t
 int main(int argc, char *argv[]) {
   char input_buffer[PATH_MAX];
   tline * line;
-
+  // Me gusta la gasolina
   parse_shell_args(argc, argv);
   signal(SIGINT, sigint_handler);
   signal(SIGCHLD, sigchld_handler);
