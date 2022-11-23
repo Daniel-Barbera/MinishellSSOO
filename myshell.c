@@ -4,6 +4,14 @@
 #include <limits.h> // PATH_MAX
 #include <stdlib.h> // exit(), getenv()
 #include "parser.h"
+// Constant definitions
+#define BACKGROUND_JOBS_MAX 10
+#define WHITE "\033[0m"
+#define GREEN "\x1b[32m"
+#define BLUE "\x1b[34m"
+#define YELLOW "\x1b[33m"
+#define RED "\x1b[31m"
+#define RESET "\x1b[0m"
 
 // Shell prompt helpers
 void print_prompt();
