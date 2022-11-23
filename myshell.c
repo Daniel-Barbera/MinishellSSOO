@@ -7,7 +7,7 @@
 // Constant definitions
 #define BACKGROUND_JOBS_MAX 10
 #define WHITE "\033[0m"
-#define GREEN "\x1b[32m"
+#define GREEN "\033[1;32m"
 #define BLUE "\x1b[34m"
 #define YELLOW "\x1b[33m"
 #define RED "\x1b[31m"
@@ -15,8 +15,7 @@
 
 // Shell prompt helpers
 void print_prompt();
-void print_green(char * str);
-void print_blue(char * str);
+void print_color(FILE * stream, char * color, char * text);
 char * polite_directory_format(char * name);
 
 
@@ -51,10 +50,10 @@ void print_prompt() {
 
   gethostname(hostname, sizeof(hostname));
   sprintf(prompt, "%s@%s", getenv("USER"), hostname);
-  print_green(prompt);
+  print_color(stdout, GREEN, prompt);
   printf(":");
   getcwd(prompt, sizeof(prompt));
-  print_blue(polite_directory_format(prompt));
+  print_color(stdout, BLUE, polite_directory_format(prompt));
   printf(" msh> ");
 }
 
