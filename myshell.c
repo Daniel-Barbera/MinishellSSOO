@@ -50,16 +50,8 @@ void print_prompt() {
   printf(" msh> ");
 }
 
-void print_green(char *str) {
-  printf("\033[1;32m");
-  printf("%s", str);
-  printf("\033[0m");
-}
-
-void print_blue(char *str) {
-  printf("\033[1;34m");
-  printf("%s", str);
-  printf("\033[0m");
+void print_color(FILE * stream, char * color, char * string) {
+  fprintf(stream, "%s%s%s", color, string, RESET);
 }
 
 // Del código fuente de Bash.
