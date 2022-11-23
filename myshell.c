@@ -74,18 +74,6 @@ int main(int argc, char *argv[]) {
   print_prompt();
   while (fgets(input_buffer, PATH_MAX, stdin)) {
     line = tokenize(input_buffer);
-    // line is a list of tcommands. It also has information about the input, output and error redirection.
-    // line->redirect_input is the file to redirect input from. If it is enabled, the first command will read from that file.
-    // line->redirect_output is the file to redirect output to. If it is enabled, the last command will write to that file.
-    // line->redirect_error is the file to redirect error to. If it is enabled, the last command will write to that file.
-    // line->background is a flag to indicate if the chain of commands should be executed in background.
-    // line->ncommands is the number of commands in the chain.
-    // line->commands is the list of commands.
-    // line->commands[i] is the i-th command in the chain.
-    // line->commands[i].filename is the command.
-    // line->commands[i].argv is the list of arguments.
-    // line->commands[i].argc is the number of arguments.
-    // line->commands[i].argv[j] is the j-th argument.
 
     // Set redirection variables
     set_redirection_variables(line);
