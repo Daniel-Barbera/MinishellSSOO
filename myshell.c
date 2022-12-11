@@ -10,20 +10,22 @@
 #include <sys/types.h> // pid_t
 #include <sys/stat.h> 
 #include <errno.h> // errno
+#include <locale.h> // setlocale()
 #include "parser.h"
 /** Constant definitions */
 #define BACKGROUND_JOBS_MAX (size_t) 100
 #define MAX_COMMAND_LENGTH (size_t) 1024
+#define BOLD_RED "\x1b[31;1m"
 #define BOLD_GREEN "\x1b[32;1m"
 #define BOLD_BLUE "\x1b[34;1m"
 #define BOLD_PURPLE "\x1b[35;1m"
 #define WHITE "\x1b[0m"
-#define RED "\x1b[31m"
 #define YELLOW "\x1b[33m"
 #define RESET "\x1b[0m"
 
 // Shell prompt helpers
 
+bool prompt();
 void print_prompt();
 void print_color(FILE * stream, char * color, char * text);
 char * polite_directory_format(char * name);
@@ -59,8 +61,12 @@ typedef struct {
   char * command;
 } background_job;
 
+
 // Global variables
-jmp_buf env;                                         // Jump point for signal handling. See sigint_handler()
+//jmp_buf env;                                         // Buffer to store the environment for setjmp() and longjmp().
+                                                     // Used for error handling.
+locale_t current_locale;                             // Current locale
+pid_t foreground_job_pid;                            // PID of the foreground job
 char input_buffer[PATH_MAX];                         // Buffer to store user input. Useful as well to list background jobs.
 background_job background_jobs[BACKGROUND_JOBS_MAX]; // List of background jobs
 size_t background_jobs_idx;                          // Index of the next available position in background_jobs
@@ -76,41 +82,46 @@ int main(int argc, char *argv[]) {
   input_file = stdin;
   output_file = stdout;
   error_file = stderr;
-  printf("%sBienvenido a myshell (msh). Autor: Daniel Barbera (2022) bajo licencia beerware.\n%s", BOLD_GREEN, RESET);
+  setlocale(LC_ALL, "es_ES.UTF-8");
+  current_locale = newlocale(LC_ALL, "es_ES.UTF-8", (locale_t) 0);
+  printf("%sBienvenido a myshell (msh). Autor: Daniel Barbera (2022) bajo licencia GPL.\n%s", BOLD_GREEN, RESET);
   signal(SIGINT, sigint_handler);
   signal(SIGCHLD, sigchld_handler);
   signal(SIGQUIT, exit_handler);
   signal(SIGTERM, exit_handler);
   signal(SIGHUP, exit_handler);
   atexit(exit_handler);
-  setjmp(env);  // Set jump point for sigint_handler()
-                // If we checked for the return value of setjmp, we could do error handling.
-  print_prompt();
-  while (fgets(input_buffer, PATH_MAX, stdin)) {
+  while (prompt()) {
     line = tokenize(input_buffer);
-    set_redirection_variables(line); // Set redirection variables
     bad_command = check_if_all_commands_are_valid(line);
     if (bad_command != NULL) {
-      fprintf(error_file, "%smsh: comando no encontrado: %s%s\n", RED, bad_command, RESET);
-      print_prompt();
+      fprintf(error_file, "%smsh: comando no encontrado: %s%s\n", BOLD_RED, bad_command, RESET);
       continue;
     }
+    set_redirection_variables(line);
     if (line->ncommands > 1) {
       if(cd_or_exit_are_present(line)) {
-        print_color(error_file, RED, "msh: no es posible usar \"cd\" o \"exit\" con pipes.\n");
-        print_prompt();
+        print_color(error_file, BOLD_RED, "msh: no es posible usar \"cd\" o \"exit\" con pipes.\n");
         continue;
       }
     }
     execute_commands(line);
     close_redirection_files();
-    print_prompt();
   }
   return 0;
 }
 
 // Shell prompt helpers 
-
+/** Print the prompt, and get user input.*/
+bool prompt() {
+  char * input;
+  print_prompt();
+  input = fgets(input_buffer, PATH_MAX, stdin);
+  if (input == NULL) {
+    exit(0);
+  }
+  return true;
+}
 /** Print the msh> prompt. */
 void print_prompt() {
   char prompt[PATH_MAX], 
@@ -128,7 +139,7 @@ void print_prompt() {
 void print_color(FILE * stream, char * color, char * string) {
   fprintf(stream, "%s%s%s", color, string, RESET);
 }
-/** https://github.com/bminor/bash/blob/fb0092fb0e7bb3121d3b18881f72177bcb765491/general.c
+/** https://github.com/bminor/bash/blob/fb0092fb0e7bb3121d3b18881f72177bcb765491/general.c#L904
  *  Takes a path string, and if the environment variable HOME is part of it, replaces the HOME part with "~". */
 char * polite_directory_format(char * name) {
   char * home = getenv("HOME");
@@ -150,10 +161,16 @@ char * polite_directory_format(char * name) {
 // Signal handlers
 
 /** Handles SIGINT: ignore, and print prompt. */ 
-void sigint_handler() {
+void sigint_handler(int sig) {
   signal(SIGINT, sigint_handler);
-  printf("\n");
-  longjmp(env, 1);
+  if (foreground_job_pid > 0) {
+    printf("\n");
+    kill(foreground_job_pid, SIGTERM);
+  } else {
+    printf("\n");
+    print_prompt();
+  }
+  fflush(stdout);
 }
 /**  Handles SIGCHLD: remove terminated background jobs from the list,
  *   and print a message if the job was terminated by a signal. */
@@ -219,13 +236,13 @@ bool set_redirection_file(char * filename, FILE ** file_ptr) {
     aux_file_ptr = fopen(filename, "w");
   }
   if (aux_file_ptr == NULL) {
-    fprintf(error_file, "%s%s: %s%s", RED, filename, strerror(errno), RESET);
+    fprintf(error_file, "%s%s: %s%s\n", BOLD_RED, filename, strerror_l(errno, current_locale), RESET);
     return false;
   }
   * file_ptr = aux_file_ptr;
   return true;
 }
-/** Determines if any of the commands entered is not valid. */ 
+/** Determines if any of the commands enteBOLD_RED is not valid. */ 
 char * check_if_all_commands_are_valid(tline * line) {
   if (line == NULL) return NULL;
   for (size_t i = 0; i < line->ncommands; i++) {
@@ -285,7 +302,7 @@ void execute_commands(tline * line) {
     fprintf(
       error_file,
       "%smsh: no se pueden ejecutar más de %zu procesos en segundo plano.%s\n",
-      RED,
+      BOLD_RED,
       BACKGROUND_JOBS_MAX,
       RESET
     );
@@ -305,9 +322,13 @@ void execute_commands(tline * line) {
       jobs();
       return;
     } else if (strcmp(line->commands[0].argv[0], "fg") == 0) {
+      if (line->commands[0].argv[1] == NULL) {
+        foreground(0);
+        return;
+      }
       job_id = atoi(line->commands[0].argv[1]);
       if (job_id == 0 && line->commands[0].argv[1][0] != '0') {
-        fprintf(error_file, "%smsh: fg: %s: no es un número válido.%s\n", RED, line->commands[0].argv[1], RESET);
+        fprintf(error_file, "%smsh: fg: %s: no es un número válido.%s\n", BOLD_RED, line->commands[0].argv[1], RESET);
         return;
       }
       foreground(job_id);
@@ -317,6 +338,7 @@ void execute_commands(tline * line) {
     pid = fork();
     if (pid == 0) {
       // Child process
+      signal(SIGINT, SIG_DFL);
       if (line->background) {
         setpgid(0, 0);
       }
@@ -330,14 +352,22 @@ void execute_commands(tline * line) {
         dup2(fileno(error_file), STDERR_FILENO);
       }
       execvp(line->commands[0].filename, line->commands[0].argv);
-      fprintf(error_file, "%s%s: %s%s\n", RED, line->commands[0].argv[0], strerror(errno), RESET);
+      fprintf(
+        error_file, "%s%s: %s%s\n",
+        BOLD_RED,
+        line->commands[0].argv[0],
+        strerror_l(errno, current_locale),
+        RESET
+      );
       exit(1);
     } else {
       // Parent process
       if (line->background) {
         push_background_job_to_queue(pid);
       } else {
+        foreground_job_pid = pid;
         waitpid(pid, &status, 0);
+        foreground_job_pid = 0;
       }
     }
   } 
@@ -368,7 +398,7 @@ void cd(char * path) {
     chdir(getenv("HOME"));
   } else {
     if (chdir(path) < 0) {
-      fprintf(error_file, "%s%s: %s%s", RED, path, strerror(errno), RESET);
+      fprintf(error_file, "%s%s: %s%s\n", BOLD_RED, path, strerror_l(errno, current_locale), RESET);
     }
   }
 }
@@ -405,7 +435,7 @@ void umask_impl(tcommand command) {
     if ( * endptr != '\0' || errno) {
       print_color(
         error_file,
-        RED, 
+        BOLD_RED, 
         "umask: Error de conversión a octal. Nota: actualizar permisos de forma simbólica no está soportado actualmente.\n"
       );
       return; 
@@ -420,34 +450,46 @@ void umask_impl(tcommand command) {
 }
 void foreground(size_t job_id) {
   pid_t pid;
-  pid = background_jobs[job_id].pid;
-  if (pid == 0) {
-    print_color(error_file, RED, "fg: no hay ningún trabajo en segundo plano con ese identificador.\n");
+
+  if (job_id >= background_jobs_idx) {
+    print_color(error_file, BOLD_RED, "fg: no hay ningún trabajo en segundo plano con ese identificador.\n");
     return;
   }
+  pid = background_jobs[job_id].pid;
+  if (pid == 0) {
+    print_color(error_file, BOLD_RED, "fg: no hay ningún trabajo en segundo plano con ese identificador.\n");
+    return;
+  }
+  foreground_job_pid = pid;
   waitpid(pid, NULL, 0);
+  foreground_job_pid = 0;
   remove_background_job(pid);
 }
+
+/** https://github.com/bminor/bash/blob/f3a35a2d601a55f337f8ca02a541f8c033682247/builtins/umask.def#L146
+ * Prints the permissions mask similarly to how "ls -l" would. */
 void print_symbolic_umask(mode_t umask) {
-  char ubits[4], gbits[4], obits[4];
+  char user_bits[4], group_bits[4], other_bits[4];
   int i;
 
   // S_IRUSR and friends are defined in sys/stat.h
   i = 0;
-  if ((umask & S_IRUSR) == 0) ubits[i++] = 'r';
-  if ((umask & S_IWUSR) == 0) ubits[i++] = 'w';
-  if ((umask & S_IXUSR) == 0) ubits[i++] = 'x';
-  ubits[i] = '\0';
+  if ((umask & S_IRUSR) == 0) user_bits[i++] = 'r';
+  if ((umask & S_IWUSR) == 0) user_bits[i++] = 'w';
+  if ((umask & S_IXUSR) == 0) user_bits[i++] = 'x';
+  user_bits[i] = '\0';
   i = 0;
-  if ((umask & S_IRGRP) == 0) gbits[i++] = 'r';
-  if ((umask & S_IWGRP) == 0) gbits[i++] = 'w';
-  if ((umask & S_IXGRP) == 0) gbits[i++] = 'x';
-  gbits[i] = '\0';
+  if ((umask & S_IRGRP) == 0) group_bits[i++] = 'r';
+  if ((umask & S_IWGRP) == 0) group_bits[i++] = 'w';
+  if ((umask & S_IXGRP) == 0) group_bits[i++] = 'x';
+  group_bits[i] = '\0';
   i = 0;
-  if ((umask & S_IROTH) == 0) obits[i++] = 'r';
-  if ((umask & S_IWOTH) == 0) obits[i++] = 'w';
-  if ((umask & S_IXOTH) == 0) obits[i++] = 'x';
-  obits[i] = '\0';
-  fprintf(output_file, "u=%s,g=%s,o=%s\n", ubits, gbits, obits);
+  if ((umask & S_IROTH) == 0) other_bits[i++] = 'r';
+  if ((umask & S_IWOTH) == 0) other_bits[i++] = 'w';
+  if ((umask & S_IXOTH) == 0) other_bits[i++] = 'x';
+  other_bits[i] = '\0';
+  // According to Wikipedia, there should be a fourth permission bit for "a" (all).
+  // This is not the case for the C implementation of umask. 
+  fprintf(output_file, "u=%s,g=%s,o=%s\n", user_bits, group_bits, other_bits);
 }
 
