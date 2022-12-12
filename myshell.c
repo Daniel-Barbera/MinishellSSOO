@@ -69,8 +69,6 @@ size_t background_jobs_idx;                          // Index of the next availa
 FILE * input_file;                                   // File to redirect input from
 FILE * output_file;                                  // File to redirect output to
 FILE * error_file;                                   // File to redirect error to
-int stdin_fd;                                        // File descriptor of stdin
-int stdout_fd;                                       // File descriptor of stdout
 int stderr_fd;                                       // File descriptor of stderr
 
 int main() {
@@ -80,8 +78,6 @@ int main() {
   input_file = stdin;
   output_file = stdout;
   error_file = stderr;
-  stdin_fd = dup(STDIN_FILENO);
-  stdout_fd = dup(STDOUT_FILENO);
   stderr_fd = dup(STDERR_FILENO);
   setlocale(LC_ALL, "es_ES.UTF-8"); // Set locale to Spanish, else default to the system locale.
   printf("%sBienvenido a myshell (msh). Autor: Daniel Barbera (2022) bajo licencia GPL.\n%s", BOLD_GREEN, RESET);
