@@ -81,11 +81,11 @@ int main() {
   stderr_fd = dup(STDERR_FILENO);
   setlocale(LC_ALL, "es_ES.UTF-8"); // Set locale to Spanish, else default to the system locale.
   printf("%sBienvenido a myshell (msh). Autor: Daniel Barbera (2022) bajo licencia GPL.\n%s", BOLD_GREEN, RESET);
-  signal(SIGINT, sigint_handler);
-  signal(SIGCHLD, sigchld_handler);
-  signal(SIGQUIT, exit_handler);
-  signal(SIGTERM, exit_handler);
-  signal(SIGHUP, exit_handler);
+  signal_or_exit(SIGINT, sigint_handler);
+  signal_or_exit(SIGCHLD, sigchld_handler);
+  signal_or_exit(SIGQUIT, exit_handler);
+  signal_or_exit(SIGTERM, exit_handler);
+  signal_or_exit(SIGHUP, exit_handler);
   atexit(exit_handler);
   while (prompt()) {
     if (input_buffer[0] == '\n') {
@@ -163,7 +163,7 @@ char * polite_directory_format(char * name) {
 // Signal handlers
 /** Handles SIGINT: ignore, and print prompt. */ 
 void sigint_handler() {
-  signal(SIGINT, sigint_handler);
+  signal_or_exit(SIGINT, sigint_handler);
   printf("\n");
   if (foreground_job_pid <= 0) {
     print_prompt();
@@ -178,7 +178,7 @@ void sigchld_handler() {
   int status;
   pid_t dead_process_id;
 
-  signal(SIGCHLD, sigchld_handler);
+  signal_or_exit(SIGCHLD, sigchld_handler);
   dead_process_id = waitpid(-1, &status, WNOHANG | WUNTRACED);
   if (dead_process_id <= 0) {
     return;
