@@ -215,7 +215,7 @@ void exit_handler() {
     }
   }
   printf("%sMemoria liberada. ¡Adiós!%s\n", BOLD_PURPLE, RESET);
-  exit(0);
+  exit(EXIT_SUCCESS);
 }
 // Shell helpers
 /** Set input, output and error redirection. 
@@ -383,7 +383,7 @@ void execute_command(tline * line) {
         cd(line->commands[0].argv[1]);
         return;
     } else if (strcmp(line->commands[0].argv[0], "exit") == 0) {
-      exit(0);
+      exit(EXIT_SUCCESS);
     } else if (strcmp(line->commands[0].argv[0], "umask") == 0) {
       umask_impl(line->commands[0]);
       return;
