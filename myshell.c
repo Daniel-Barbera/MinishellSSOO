@@ -13,7 +13,7 @@
 #include <locale.h> // setlocale()
 #include "parser.h"
 /** Constant definitions */
-#define BACKGROUND_JOBS_MAX (size_t) 100
+#define BACKGROUND_JOBS_MAX (size_t) 10
 #define MAX_COMMAND_LENGTH (size_t) 1024
 #define BOLD_RED "\x1b[31;1m"
 #define BOLD_GREEN "\x1b[32;1m"
@@ -66,7 +66,7 @@ FILE * input_file;                                   // File to redirect input f
 FILE * output_file;                                  // File to redirect output to
 FILE * error_file;                                   // File to redirect error to
 
-int main(int argc, char *argv[]) {
+int main() {
   char * bad_command;
   tline * line;
 
@@ -149,7 +149,7 @@ char * polite_directory_format(char * name) {
 }
 // Signal handlers
 /** Handles SIGINT: ignore, and print prompt. */ 
-void sigint_handler(int sig) {
+void sigint_handler() {
   signal(SIGINT, sigint_handler);
   printf("\n");
   if (foreground_job_pid <= 0) {
@@ -203,8 +203,6 @@ void exit_handler() {
 /** Set input, output and error redirection. 
  *  If they're not enabled, reset them to stdin, stdout and stderr. */ 
 bool set_redirection_variables(tline * line) {
-  FILE * file_ptr;
-
   input_file = stdin;
   output_file = stdout;
   error_file = stderr;
@@ -237,7 +235,7 @@ bool set_redirection_file(char * filename, FILE ** file_ptr) {
 /** Determines if any of the commands entered is not valid. */ 
 char * check_if_all_commands_are_valid(tline * line) {
   if (line == NULL) return NULL;
-  for (size_t i = 0; i < line->ncommands; i++) {
+  for (size_t i = 0; i < (size_t) line->ncommands; i++) {
     if (
       line->commands[i].filename == NULL 
       && strcmp(line->commands[i].argv[0], "cd") != 0
@@ -253,7 +251,7 @@ char * check_if_all_commands_are_valid(tline * line) {
 }
 /**  Determines if the line contains the commands "cd" or "exit". */
 bool cd_or_exit_are_present(tline * line) {
-  for (size_t i = 0; i < line->ncommands; i++) {
+  for (size_t i = 0; i < (size_t) line->ncommands; i++) {
     if (strcmp(line->commands[i].argv[0], "cd") == 0 || strcmp(line->commands[i].argv[0], "exit") == 0) {
       return true;
     }
@@ -411,7 +409,7 @@ void umask_impl(tcommand command) {
   bool symbolic = false;
   char * mask, * endptr;
 
-  for (size_t i = 0; i < command.argc; i++) {
+  for (size_t i = 0; i < (size_t) command.argc; i++) {
     if (strcmp(command.argv[i], "-S") == 0 || strcmp(command.argv[i], "--symbolic") == 0) {
       symbolic = true;
     }
