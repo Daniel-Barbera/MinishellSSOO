@@ -24,20 +24,15 @@
 #define RESET "\x1b[0m"
 
 // Shell prompt helpers
-
 bool prompt();
 void print_prompt();
 void print_color(FILE * stream, char * color, char * text);
 char * polite_directory_format(char * name);
-
 // Signal handlers
-
 void sigint_handler();
 void sigchld_handler();
 void exit_handler();
-
 // Shell helpers
-
 char * check_if_all_commands_are_valid(tline * line);
 bool set_redirection_variables(tline * line);
 bool set_redirection_file(char * filename, FILE ** file_ptr);
@@ -45,9 +40,7 @@ bool cd_or_exit_are_present(tline * line);
 void execute_commands(tline * line);
 void close_redirection_files();
 void remove_background_job(pid_t pid);
-
 // Shell commands
-
 void cd(char * path);
 void umask_impl(tcommand command);
 void foreground(size_t job_id);
@@ -61,11 +54,9 @@ typedef struct {
   char * command;
 } background_job;
 
-
 // Global variables
 //jmp_buf env;                                         // Buffer to store the environment for setjmp() and longjmp().
                                                      // Used for error handling.
-locale_t current_locale;                             // Current locale
 pid_t foreground_job_pid;                            // PID of the foreground job
 char input_buffer[PATH_MAX];                         // Buffer to store user input. Useful as well to list background jobs.
 background_job background_jobs[BACKGROUND_JOBS_MAX]; // List of background jobs
@@ -82,8 +73,7 @@ int main(int argc, char *argv[]) {
   input_file = stdin;
   output_file = stdout;
   error_file = stderr;
-  setlocale(LC_ALL, "es_ES.UTF-8");
-  current_locale = newlocale(LC_ALL, "es_ES.UTF-8", (locale_t) 0);
+  setlocale(LC_ALL, "es_ES.UTF-8"); // Set locale to Spanish, else default to the system locale.
   printf("%sBienvenido a myshell (msh). Autor: Daniel Barbera (2022) bajo licencia GPL.\n%s", BOLD_GREEN, RESET);
   signal(SIGINT, sigint_handler);
   signal(SIGCHLD, sigchld_handler);
@@ -157,18 +147,15 @@ char * polite_directory_format(char * name) {
   else
     return (name);
 }
-
 // Signal handlers
-
 /** Handles SIGINT: ignore, and print prompt. */ 
 void sigint_handler(int sig) {
   signal(SIGINT, sigint_handler);
-  if (foreground_job_pid > 0) {
-    printf("\n");
-    kill(foreground_job_pid, SIGTERM);
-  } else {
-    printf("\n");
+  printf("\n");
+  if (foreground_job_pid <= 0) {
     print_prompt();
+  } else {
+    kill(foreground_job_pid, SIGTERM);
   }
   fflush(stdout);
 }
@@ -186,28 +173,33 @@ void sigchld_handler() {
   for (size_t i = 0; i < background_jobs_idx; i++) {
     if (dead_process_id == background_jobs[i].pid) {
       if (WIFEXITED(status)) {
-        printf("[%zu] %s terminado con status %d\n", i, background_jobs[i].command, WEXITSTATUS(status));
+        printf("\n[%zu] %s terminado con status %d\n", i, background_jobs[i].command, WEXITSTATUS(status));
       } else if (WIFSIGNALED(status)) {
-        printf("[%zu] %s terminado por la señal %d\n", i, background_jobs[i].command, WTERMSIG(status));
+        printf("\n[%zu] %s terminado por la señal %s\n", i, background_jobs[i].command, strsignal(WTERMSIG(status)));
       }
       remove_background_job(dead_process_id);
       return;
     }
   }
 }
-
 /** Handles SIGQUIT: Clear any memory allocated, and politely exit the program. */
 void exit_handler() {
   close_redirection_files();
+  if (foreground_job_pid > 0) {
+    kill(foreground_job_pid, SIGTERM);
+  }
   for (size_t i = 0; i < background_jobs_idx; i++) {
-    free(background_jobs[i].command);
+    if (background_jobs[i].pid != 0) {
+      kill(background_jobs[i].pid, SIGTERM);
+    }
+    if (background_jobs[i].command != NULL) {
+      free(background_jobs[i].command);
+    }
   }
   printf("%sMemoria liberada. ¡Adiós!%s\n", BOLD_PURPLE, RESET);
   exit(0);
 }
-
 // Shell helpers
-
 /** Set input, output and error redirection. 
  *  If they're not enabled, reset them to stdin, stdout and stderr. */ 
 bool set_redirection_variables(tline * line) {
@@ -236,13 +228,13 @@ bool set_redirection_file(char * filename, FILE ** file_ptr) {
     aux_file_ptr = fopen(filename, "w");
   }
   if (aux_file_ptr == NULL) {
-    fprintf(error_file, "%s%s: %s%s\n", BOLD_RED, filename, strerror_l(errno, current_locale), RESET);
+    fprintf(error_file, "%s%s: %s%s\n", BOLD_RED, filename, strerror(errno), RESET);
     return false;
   }
   * file_ptr = aux_file_ptr;
   return true;
 }
-/** Determines if any of the commands enteBOLD_RED is not valid. */ 
+/** Determines if any of the commands entered is not valid. */ 
 char * check_if_all_commands_are_valid(tline * line) {
   if (line == NULL) return NULL;
   for (size_t i = 0; i < line->ncommands; i++) {
@@ -283,8 +275,9 @@ void remove_background_job(pid_t pid) {
   for (size_t i = 0; i < background_jobs_idx; i++) {
     if (background_jobs[i].pid != pid) continue;
     background_jobs[i].pid = 0;
-    if (background_jobs[i].command != NULL)
+    if (background_jobs[i].command != NULL) {
       free(background_jobs[i].command);
+    }
     for (size_t j = i; j < background_jobs_idx - 1; j++) {
       background_jobs[j] = background_jobs[j + 1];
     }
@@ -338,9 +331,11 @@ void execute_commands(tline * line) {
     pid = fork();
     if (pid == 0) {
       // Child process
-      signal(SIGINT, SIG_DFL);
+      // If the child process is a background process, it ignores the SIGINT signal.
       if (line->background) {
-        setpgid(0, 0);
+        signal(SIGINT, SIG_IGN);
+      } else {
+        signal(SIGINT, SIG_DFL);
       }
       if (line->redirect_input != NULL) {
         dup2(fileno(input_file), STDIN_FILENO);
@@ -356,7 +351,7 @@ void execute_commands(tline * line) {
         error_file, "%s%s: %s%s\n",
         BOLD_RED,
         line->commands[0].argv[0],
-        strerror_l(errno, current_locale),
+        strerror(errno),
         RESET
       );
       exit(1);
@@ -398,14 +393,14 @@ void cd(char * path) {
     chdir(getenv("HOME"));
   } else {
     if (chdir(path) < 0) {
-      fprintf(error_file, "%s%s: %s%s\n", BOLD_RED, path, strerror_l(errno, current_locale), RESET);
+      fprintf(error_file, "%s%s: %s%s\n", BOLD_RED, path, strerror(errno), RESET);
     }
   }
 }
 /** Display all active jobs */
 void jobs() {
   for (size_t i = 0; i < background_jobs_idx; i++) {
-    printf("[%zu]+  %s\n", i, background_jobs[i].command);
+    printf("[%zu]+  %s", i, background_jobs[i].command);
   }
 }
 /** Set or get the file creation mask of the current process. */
@@ -448,6 +443,7 @@ void umask_impl(tcommand command) {
     fprintf(output_file, "%03o\n", mask_value); 
   }
 }
+/** Bring a background job to the foreground. */
 void foreground(size_t job_id) {
   pid_t pid;
 
@@ -461,11 +457,11 @@ void foreground(size_t job_id) {
     return;
   }
   foreground_job_pid = pid;
+  fprintf(stdout, "Ejecutando en primer plano [%zu] %s", job_id, background_jobs[job_id].command);
   waitpid(pid, NULL, 0);
   foreground_job_pid = 0;
   remove_background_job(pid);
 }
-
 /** https://github.com/bminor/bash/blob/f3a35a2d601a55f337f8ca02a541f8c033682247/builtins/umask.def#L146
  * Prints the permissions mask similarly to how "ls -l" would. */
 void print_symbolic_umask(mode_t umask) {
