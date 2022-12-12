@@ -36,8 +36,12 @@ void exit_handler();
 char * check_if_all_commands_are_valid(tline * line);
 bool set_redirection_variables(tline * line);
 bool set_redirection_file(char * filename, FILE ** file_ptr);
-bool cd_or_exit_are_present(tline * line);
-void execute_commands(tline * line);
+char * builtin_commands_are_present(tline * line);
+void pipe_commands(tline * line);
+void execute_command(tline * command);
+void push_background_job_to_list(pid_t pid);
+void dup2_or_exit(int old_fd, int new_fd);
+void signal_or_exit(int signum, void * handler);
 void close_redirection_files();
 void remove_background_job(pid_t pid);
 // Shell commands
@@ -65,6 +69,9 @@ size_t background_jobs_idx;                          // Index of the next availa
 FILE * input_file;                                   // File to redirect input from
 FILE * output_file;                                  // File to redirect output to
 FILE * error_file;                                   // File to redirect error to
+int stdin_fd;                                        // File descriptor of stdin
+int stdout_fd;                                       // File descriptor of stdout
+int stderr_fd;                                       // File descriptor of stderr
 
 int main() {
   char * bad_command;
@@ -73,6 +80,9 @@ int main() {
   input_file = stdin;
   output_file = stdout;
   error_file = stderr;
+  stdin_fd = dup(STDIN_FILENO);
+  stdout_fd = dup(STDOUT_FILENO);
+  stderr_fd = dup(STDERR_FILENO);
   setlocale(LC_ALL, "es_ES.UTF-8"); // Set locale to Spanish, else default to the system locale.
   printf("%sBienvenido a myshell (msh). Autor: Daniel Barbera (2022) bajo licencia GPL.\n%s", BOLD_GREEN, RESET);
   signal(SIGINT, sigint_handler);
@@ -82,20 +92,27 @@ int main() {
   signal(SIGHUP, exit_handler);
   atexit(exit_handler);
   while (prompt()) {
+    if (input_buffer[0] == '\n') {
+      continue;
+    }
     line = tokenize(input_buffer);
     bad_command = check_if_all_commands_are_valid(line);
-    if (bad_command != NULL) {
+    if (bad_command) {
       fprintf(error_file, "%smsh: comando no encontrado: %s%s\n", BOLD_RED, bad_command, RESET);
       continue;
     }
-    set_redirection_variables(line);
+    if (!set_redirection_variables(line)) {
+      continue;
+    }
     if (line->ncommands > 1) {
-      if(cd_or_exit_are_present(line)) {
-        print_color(error_file, BOLD_RED, "msh: no es posible usar \"cd\" o \"exit\" con pipes.\n");
+      if((bad_command = builtin_commands_are_present(line)) && bad_command) {
+        fprintf(error_file, "%smsh: no es posible usar el comando %s con pipes.%s\n", BOLD_RED, bad_command, RESET);
         continue;
       }
+      pipe_commands(line);
+    } else {
+      execute_command(line);
     }
-    execute_commands(line);
     close_redirection_files();
   }
   return 0;
@@ -107,8 +124,8 @@ bool prompt() {
   char * input;
   print_prompt();
   input = fgets(input_buffer, PATH_MAX, stdin);
-  if (input == NULL) {
-    exit(0);
+  if (!input) {
+    exit(EXIT_SUCCESS);
   }
   return true;
 }
@@ -173,11 +190,13 @@ void sigchld_handler() {
   for (size_t i = 0; i < background_jobs_idx; i++) {
     if (dead_process_id == background_jobs[i].pid) {
       if (WIFEXITED(status)) {
-        printf("\n[%zu] %s terminado con status %d\n", i, background_jobs[i].command, WEXITSTATUS(status));
+        printf("\n[%zu] terminado con status %d: %s", i, WEXITSTATUS(status), background_jobs[i].command);
       } else if (WIFSIGNALED(status)) {
-        printf("\n[%zu] %s terminado por la señal \"%s\"\n", i, background_jobs[i].command, strsignal(WTERMSIG(status)));
+        printf("\n[%zu] terminado por la señal \"%s\": %s", i, strsignal(WTERMSIG(status)), background_jobs[i].command);
       }
       remove_background_job(dead_process_id);
+      print_prompt();
+      fflush(stdout);
       return;
     }
   }
@@ -185,6 +204,9 @@ void sigchld_handler() {
 /** Handles any termination singals by clearing any memory allocated, and politely exiting the program. */
 void exit_handler() {
   close_redirection_files();
+ /* close(stdin_fd);
+  close(stdout_fd);
+  close(stderr_fd); */
   if (foreground_job_pid > 0) {
     kill(foreground_job_pid, SIGTERM);
   }
@@ -192,7 +214,7 @@ void exit_handler() {
     if (background_jobs[i].pid != 0) {
       kill(background_jobs[i].pid, SIGTERM);
     }
-    if (background_jobs[i].command != NULL) {
+    if (background_jobs[i].command) {
       free(background_jobs[i].command);
     }
   }
@@ -217,7 +239,7 @@ bool set_redirection_variables(tline * line) {
 bool set_redirection_file(char * filename, FILE ** file_ptr) {
   FILE * aux_file_ptr;
 
-  if (filename == NULL) {
+  if (!filename) {
     return true;
   }
   if (* file_ptr == input_file) {
@@ -225,7 +247,7 @@ bool set_redirection_file(char * filename, FILE ** file_ptr) {
   } else {
     aux_file_ptr = fopen(filename, "w");
   }
-  if (aux_file_ptr == NULL) {
+  if (!aux_file_ptr) {
     fprintf(error_file, "%s%s: %s%s\n", BOLD_RED, filename, strerror(errno), RESET);
     return false;
   }
@@ -234,10 +256,10 @@ bool set_redirection_file(char * filename, FILE ** file_ptr) {
 }
 /** Determines if any of the commands entered is not valid. */ 
 char * check_if_all_commands_are_valid(tline * line) {
-  if (line == NULL) return NULL;
+  if (!line) return NULL;
   for (size_t i = 0; i < (size_t) line->ncommands; i++) {
     if (
-      line->commands[i].filename == NULL 
+      !line->commands[i].filename
       && strcmp(line->commands[i].argv[0], "cd") != 0
       && strcmp(line->commands[i].argv[0], "exit") != 0
       && strcmp(line->commands[i].argv[0], "jobs") != 0
@@ -250,16 +272,22 @@ char * check_if_all_commands_are_valid(tline * line) {
   return NULL;
 }
 /**  Determines if the line contains the commands "cd" or "exit". */
-bool cd_or_exit_are_present(tline * line) {
+char * builtin_commands_are_present(tline * line) {
   for (size_t i = 0; i < (size_t) line->ncommands; i++) {
-    if (strcmp(line->commands[i].argv[0], "cd") == 0 || strcmp(line->commands[i].argv[0], "exit") == 0) {
-      return true;
+    if (
+      strcmp(line->commands[i].argv[0], "cd") == 0 
+      || strcmp(line->commands[i].argv[0], "exit") == 0
+      || strcmp(line->commands[i].argv[0], "jobs") == 0
+      || strcmp(line->commands[i].argv[0], "fg") == 0
+      || strcmp(line->commands[i].argv[0], "umask") == 0
+    ) {
+      return line->commands[i].argv[0];
     }
   }
-  return false;
+  return NULL;
 }
 /** Parse a tcommand to string to display it when jobs() is called. Push it to the queue. */ 
-void push_background_job_to_queue(pid_t pid) {
+void push_background_job_to_list(pid_t pid) {
   char * command;
 
   command = malloc(sizeof(char) * (strlen(input_buffer) + 1));
@@ -273,7 +301,7 @@ void remove_background_job(pid_t pid) {
   for (size_t i = 0; i < background_jobs_idx; i++) {
     if (background_jobs[i].pid != pid) continue;
     background_jobs[i].pid = 0;
-    if (background_jobs[i].command != NULL) {
+    if (background_jobs[i].command) {
       free(background_jobs[i].command);
     }
     for (size_t j = i; j < background_jobs_idx - 1; j++) {
@@ -284,26 +312,80 @@ void remove_background_job(pid_t pid) {
   }
 }
 /** Execute the commands */
-void execute_commands(tline * line) {
+void pipe_commands(tline * line) {
+  int ** pipes;
   pid_t pid;
-  int status;
-  int job_id; // Used for the fg command.
 
-  if (line->background && background_jobs_idx >= BACKGROUND_JOBS_MAX) {
-    fprintf(
-      error_file,
-      "%smsh: no se pueden ejecutar más de %zu procesos en segundo plano.%s\n",
-      BOLD_RED,
-      BACKGROUND_JOBS_MAX,
-      RESET
-    );
-    return;
-  }
-  if (line->ncommands == 1) {
-    // Any builtin commands (cd, exit, umask, jobs, fg) are executed in the parent process.
-    if (strcmp(line->commands[0].argv[0], "cd") == 0) {
-      cd(line->commands[0].argv[1]);
+  // Pipes will be a 2D array of size ncommands - 1.
+  // Each row will contain two file descriptors, one for reading and one for writing.
+  pipes = malloc(sizeof(int *) * (line->ncommands - 1));
+  for (size_t i = 0; i < (size_t) line->ncommands - 1; i++) {
+    pipes[i] = malloc(sizeof(int) * 2);
+    if (pipe(pipes[i]) == -1) {
+      fprintf(error_file, "%sError creating pipe: %s%s\n", BOLD_RED, strerror(errno), RESET);
       return;
+    }
+  }
+  dup2(fileno(error_file), STDERR_FILENO);
+  for (size_t i = 0; i < (size_t) line->ncommands; i++) {
+    pid = fork();
+    if (pid == -1) {
+      fprintf(error_file, "%sError forking: %s%s\n", BOLD_RED, strerror(errno), RESET);
+      return;
+    }
+    if (pid == 0) {
+      // Child process.
+      if (i == 0) {
+        // First command.
+        dup2_or_exit(fileno(input_file), STDIN_FILENO);
+      } else {
+        dup2_or_exit(pipes[i - 1][0], STDIN_FILENO);
+      }
+      if (i == (size_t) line->ncommands - 1) {
+        // Last command.
+        dup2_or_exit(fileno(output_file), STDOUT_FILENO);
+      } else {
+        dup2_or_exit(pipes[i][1], STDOUT_FILENO);
+      }
+      for (size_t j = 0; j < (size_t) line->ncommands - 1; j++) {
+        close(pipes[j][0]);
+        close(pipes[j][1]);
+      }
+      execvp(line->commands[i].filename, line->commands[i].argv);
+      fprintf(error_file, "%s%s: %s%s\n", BOLD_RED, line->commands[i].argv[0], strerror(errno), RESET);
+      exit(EXIT_FAILURE);
+    } else {
+      // Parent process.
+      if (i != (size_t) line->ncommands - 1) {
+        if (!line->background) {
+          foreground_job_pid = pid;
+          waitpid(pid, NULL, 0);
+          foreground_job_pid = 0;
+        }
+      } else {
+        if (line->background) {
+          push_background_job_to_list(pid);
+        } else {
+          foreground_job_pid = pid;
+          waitpid(pid, NULL, 0);
+          foreground_job_pid = 0;
+        }
+      }
+      if (i != (size_t) line->ncommands - 1) {
+        close(pipes[i][1]);
+      }
+    }
+  }
+  free(pipes);
+}
+/** Execute a command. */
+void execute_command(tline * line) {
+  size_t job_id; // Used for fg.
+  pid_t pid;
+  if (!line->commands[0].filename) {
+    if (strcmp(line->commands[0].argv[0], "cd") == 0) {
+        cd(line->commands[0].argv[1]);
+        return;
     } else if (strcmp(line->commands[0].argv[0], "exit") == 0) {
       exit(0);
     } else if (strcmp(line->commands[0].argv[0], "umask") == 0) {
@@ -313,7 +395,7 @@ void execute_commands(tline * line) {
       jobs();
       return;
     } else if (strcmp(line->commands[0].argv[0], "fg") == 0) {
-      if (line->commands[0].argv[1] == NULL) {
+      if (!line->commands[0].argv[1]) {
         foreground(0);
         return;
       }
@@ -325,53 +407,68 @@ void execute_commands(tline * line) {
       foreground(job_id);
       return;
     }
-    // Non built-in commands are executed in a child process.
+  } else {
     pid = fork();
+    if (pid == -1) {
+      fprintf(error_file, "%sfork: %s%s\n", BOLD_RED, strerror(errno), RESET);
+      return;
+    }
     if (pid == 0) {
       // Child process
       // If the child process is a background process, it ignores the SIGINT signal.
       // The appropriate way to do this would be to create a new process group or session.
       if (line->background) {
-        signal(SIGINT, SIG_IGN);
+        signal_or_exit(SIGINT, SIG_IGN);
       } else {
-        signal(SIGINT, SIG_DFL);
+        signal_or_exit(SIGINT, SIG_DFL);
       }
-      if (line->redirect_input != NULL) {
-        dup2(fileno(input_file), STDIN_FILENO);
-      }
-      if (line->redirect_output != NULL) {
-        dup2(fileno(output_file), STDOUT_FILENO);
-      }
-      if (line->redirect_error != NULL) {
-        dup2(fileno(error_file), STDERR_FILENO);
-      }
+      if (line->redirect_input) dup2_or_exit(fileno(input_file), STDIN_FILENO);
+      if (line->redirect_output) dup2_or_exit(fileno(output_file), STDOUT_FILENO);
+      if (line->redirect_error) dup2_or_exit(fileno(error_file), STDERR_FILENO);
       execvp(line->commands[0].filename, line->commands[0].argv);
       fprintf(
-        error_file, "%s%s: %s%s\n",
+        error_file, 
+        "%s%s: %s%s\n",
         BOLD_RED,
         line->commands[0].argv[0],
         strerror(errno),
         RESET
       );
-      exit(1);
+      exit(EXIT_FAILURE);
     } else {
       // Parent process
       if (line->background) {
-        push_background_job_to_queue(pid);
+        push_background_job_to_list(pid);
+        return;
       } else {
         foreground_job_pid = pid;
-        waitpid(pid, &status, 0);
+        waitpid(pid, NULL, 0);
         foreground_job_pid = 0;
       }
     }
   } 
 }
+/** Duplicate file descriptor. Return false if cannot. */
+void dup2_or_exit(int old_fd, int new_fd) {
+  if (dup2(old_fd, new_fd) == -1) {
+    fprintf(error_file, "%sdup2: %s%s\n", BOLD_RED, strerror(errno), RESET);
+    exit(EXIT_FAILURE);
+  }
+}
+void signal_or_exit(int signum, void * handler) {
+  if (signal(signum, handler) == SIG_ERR) {
+    fprintf(error_file, "%ssignal: %s%s\n", BOLD_RED, strerror(errno), RESET);
+    exit(EXIT_FAILURE);
+  }
+}
+/** Set signal handler or return false */
 /** Close redirection files if they're not stdin, stdout or stderr. */
 void close_redirection_files() {
   int input_fd =  fileno(input_file),
       output_fd = fileno(output_file),
       error_fd =  fileno(error_file);
-
+          
+  dup2(stderr_fd, STDERR_FILENO);
   // Closing of standard input files is illegal.
   if (input_fd != STDIN_FILENO) {
     fclose(input_file);
@@ -389,7 +486,7 @@ void close_redirection_files() {
 // Shell built-in commands
 /** Change directory. */
 void cd(char * path) {
-  if (path == NULL) {
+  if (!path) {
     chdir(getenv("HOME"));
   } else {
     if (chdir(path) < 0) {
@@ -421,7 +518,7 @@ void umask_impl(tcommand command) {
     return;
   }
   mask = command.argv[1];
-  if (mask != NULL) {
+  if (mask) {
     errno = 0; 
     mask_value = strtol(mask, &endptr, 8);
     if ( * endptr != '\0' || errno) {
@@ -437,7 +534,7 @@ void umask_impl(tcommand command) {
   } else {
     mask_value = umask(022);
     umask(mask_value);
-    fprintf(output_file, "%03o\n", mask_value); 
+    fprintf(output_file, "%04o\n", mask_value); 
   }
 }
 /** Bring a background job to the foreground. */
