@@ -175,14 +175,14 @@ void sigchld_handler() {
       if (WIFEXITED(status)) {
         printf("\n[%zu] %s terminado con status %d\n", i, background_jobs[i].command, WEXITSTATUS(status));
       } else if (WIFSIGNALED(status)) {
-        printf("\n[%zu] %s terminado por la señal %s\n", i, background_jobs[i].command, strsignal(WTERMSIG(status)));
+        printf("\n[%zu] %s terminado por la señal \"%s\"\n", i, background_jobs[i].command, strsignal(WTERMSIG(status)));
       }
       remove_background_job(dead_process_id);
       return;
     }
   }
 }
-/** Handles SIGQUIT: Clear any memory allocated, and politely exit the program. */
+/** Handles any termination singals by clearing any memory allocated, and politely exiting the program. */
 void exit_handler() {
   close_redirection_files();
   if (foreground_job_pid > 0) {
@@ -321,7 +321,7 @@ void execute_commands(tline * line) {
       }
       job_id = atoi(line->commands[0].argv[1]);
       if (job_id == 0 && line->commands[0].argv[1][0] != '0') {
-        fprintf(error_file, "%smsh: fg: %s: no es un número válido.%s\n", BOLD_RED, line->commands[0].argv[1], RESET);
+        fprintf(error_file, "%sfg: %s no es un número válido.%s\n", BOLD_RED, line->commands[0].argv[1], RESET);
         return;
       }
       foreground(job_id);
@@ -332,6 +332,7 @@ void execute_commands(tline * line) {
     if (pid == 0) {
       // Child process
       // If the child process is a background process, it ignores the SIGINT signal.
+      // The appropriate way to do this would be to create a new process group or session.
       if (line->background) {
         signal(SIGINT, SIG_IGN);
       } else {
@@ -373,6 +374,7 @@ void close_redirection_files() {
       output_fd = fileno(output_file),
       error_fd =  fileno(error_file);
 
+  // Closing of standard input files is illegal.
   if (input_fd != STDIN_FILENO) {
     fclose(input_file);
     input_file = stdin;
@@ -405,10 +407,7 @@ void jobs() {
 }
 /** Set or get the file creation mask of the current process. */
 void umask_impl(tcommand command) {
-  mode_t mask_value,
-         user_permissions,
-         group_permissions,
-         other_permissions;
+  mode_t mask_value;
   bool symbolic = false;
   char * mask, * endptr;
 
