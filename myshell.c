@@ -4,7 +4,6 @@
 #include <signal.h> // Signal handling
 #include <unistd.h> // getcwd(), gethostname()
 #include <limits.h> // PATH_MAX, HOST_NAME_MAX, FILENAME_MAX
-#include <setjmp.h> // setjmp(), longjmp()
 #include <stdlib.h> // exit(), getenv(), chdir(), etc.
 #include <sys/wait.h> // waitpid()
 #include <sys/types.h> // pid_t
@@ -33,6 +32,7 @@ void sigint_handler();
 void sigchld_handler();
 void exit_handler();
 // Shell helpers
+void set_up_preconditions();
 char * check_if_all_commands_are_valid(tline * line);
 bool set_redirection_variables(tline * line);
 bool set_redirection_file(char * filename, FILE ** file_ptr);
@@ -59,7 +59,6 @@ typedef struct {
 } background_job;
 
 // Global variables
-//jmp_buf env;                                         // Buffer to store the environment for setjmp() and longjmp().
                                                      // Used for error handling.
 pid_t foreground_job_pid;                            // PID of the foreground job
 char input_buffer[PATH_MAX];                         // Buffer to store user input. Useful as well to list background jobs.
@@ -75,18 +74,7 @@ int main() {
   char * bad_command;
   tline * line;
 
-  input_file = stdin;
-  output_file = stdout;
-  error_file = stderr;
-  stderr_fd = dup(STDERR_FILENO);
-  setlocale(LC_ALL, "es_ES.UTF-8"); // Set locale to Spanish, else default to the system locale.
-  printf("%sBienvenido a myshell (msh). Autor: Daniel Barbera (2022) bajo licencia GPL.\n%s", BOLD_GREEN, RESET);
-  signal_or_exit(SIGINT, sigint_handler);
-  signal_or_exit(SIGCHLD, sigchld_handler);
-  signal_or_exit(SIGQUIT, exit_handler);
-  signal_or_exit(SIGTERM, exit_handler);
-  signal_or_exit(SIGHUP, exit_handler);
-  atexit(exit_handler);
+  set_up_preconditions();
   while (prompt()) {
     if (input_buffer[0] == '\n') {
       continue;
@@ -197,12 +185,9 @@ void sigchld_handler() {
     }
   }
 }
-/** Handles any termination singals by clearing any memory allocated, and politely exiting the program. */
+/** Handles any termination signals by clearing any memory allocated, and politely exiting the program. */
 void exit_handler() {
   close_redirection_files();
- /* close(stdin_fd);
-  close(stdout_fd);
-  close(stderr_fd); */
   if (foreground_job_pid > 0) {
     kill(foreground_job_pid, SIGTERM);
   }
@@ -218,6 +203,20 @@ void exit_handler() {
   exit(EXIT_SUCCESS);
 }
 // Shell helpers
+void set_up_preconditions() {
+  input_file = stdin;
+  output_file = stdout;
+  error_file = stderr;
+  stderr_fd = dup(STDERR_FILENO);
+  setlocale(LC_ALL, "es_ES.UTF-8"); // Set locale to Spanish, else default to the system locale.
+  printf("%sBienvenido a myshell (msh). Autor: Daniel Barbera (2022) bajo licencia GPL.\n%s", BOLD_GREEN, RESET);
+  signal_or_exit(SIGINT, sigint_handler);
+  signal_or_exit(SIGCHLD, sigchld_handler);
+  signal_or_exit(SIGQUIT, exit_handler);
+  signal_or_exit(SIGTERM, exit_handler);
+  signal_or_exit(SIGHUP, exit_handler);
+  atexit(exit_handler);
+}
 /** Set input, output and error redirection. 
  *  If they're not enabled, reset them to stdin, stdout and stderr. */ 
 bool set_redirection_variables(tline * line) {
@@ -319,6 +318,10 @@ void pipe_commands(tline * line) {
     pipes[i] = malloc(sizeof(int) * 2);
     if (pipe(pipes[i]) == -1) {
       fprintf(error_file, "%sError creating pipe: %s%s\n", BOLD_RED, strerror(errno), RESET);
+      for (size_t j = 0; j < i; j++) {
+        free(pipes[j]);
+      }
+      free(pipes);
       return;
     }
   }
@@ -378,19 +381,24 @@ void pipe_commands(tline * line) {
 void execute_command(tline * line) {
   size_t job_id; // Used for fg.
   pid_t pid;
+
   if (!line->commands[0].filename) {
     if (strcmp(line->commands[0].argv[0], "cd") == 0) {
         cd(line->commands[0].argv[1]);
         return;
-    } else if (strcmp(line->commands[0].argv[0], "exit") == 0) {
+    } 
+    if (strcmp(line->commands[0].argv[0], "exit") == 0) {
       exit(EXIT_SUCCESS);
-    } else if (strcmp(line->commands[0].argv[0], "umask") == 0) {
+    } 
+    if (strcmp(line->commands[0].argv[0], "umask") == 0) {
       umask_impl(line->commands[0]);
       return;
-    } else if (strcmp(line->commands[0].argv[0], "jobs") == 0) {
+    } 
+    if (strcmp(line->commands[0].argv[0], "jobs") == 0) {
       jobs();
       return;
-    } else if (strcmp(line->commands[0].argv[0], "fg") == 0) {
+    } 
+    if (strcmp(line->commands[0].argv[0], "fg") == 0) {
       if (!line->commands[0].argv[1]) {
         foreground(0);
         return;
@@ -403,47 +411,47 @@ void execute_command(tline * line) {
       foreground(job_id);
       return;
     }
-  } else {
-    pid = fork();
-    if (pid == -1) {
-      fprintf(error_file, "%sfork: %s%s\n", BOLD_RED, strerror(errno), RESET);
-      return;
-    }
-    if (pid == 0) {
-      // Child process
-      // If the child process is a background process, it ignores the SIGINT signal.
-      // The appropriate way to do this would be to create a new process group or session.
-      if (line->background) {
-        signal_or_exit(SIGINT, SIG_IGN);
-      } else {
-        signal_or_exit(SIGINT, SIG_DFL);
-      }
-      if (line->redirect_input) dup2_or_exit(fileno(input_file), STDIN_FILENO);
-      if (line->redirect_output) dup2_or_exit(fileno(output_file), STDOUT_FILENO);
-      if (line->redirect_error) dup2_or_exit(fileno(error_file), STDERR_FILENO);
-      execvp(line->commands[0].filename, line->commands[0].argv);
-      fprintf(
-        error_file, 
-        "%s%s: %s%s\n",
-        BOLD_RED,
-        line->commands[0].argv[0],
-        strerror(errno),
-        RESET
-      );
-      exit(EXIT_FAILURE);
-    } else {
-      // Parent process
-      if (line->background) {
-        push_background_job_to_list(pid);
-        return;
-      } else {
-        foreground_job_pid = pid;
-        waitpid(pid, NULL, 0);
-        foreground_job_pid = 0;
-      }
-    }
   } 
-}
+  pid = fork();
+  if (pid == -1) {
+    fprintf(error_file, "%sfork: %s%s\n", BOLD_RED, strerror(errno), RESET);
+    return;
+  }
+  if (pid == 0) {
+    // Child process
+    // If the child process is a background process, it ignores the SIGINT signal.
+    // The appropriate way to do this would be to create a new process group or session.
+    if (line->background) {
+      signal_or_exit(SIGINT, SIG_IGN);
+    } else {
+      signal_or_exit(SIGINT, SIG_DFL);
+    }
+    if (line->redirect_input) dup2_or_exit(fileno(input_file), STDIN_FILENO);
+    if (line->redirect_output) dup2_or_exit(fileno(output_file), STDOUT_FILENO);
+    if (line->redirect_error) dup2_or_exit(fileno(error_file), STDERR_FILENO);
+    execvp(line->commands[0].filename, line->commands[0].argv);
+    fprintf(
+      error_file, 
+      "%s%s: %s%s\n",
+      BOLD_RED,
+      line->commands[0].argv[0],
+      strerror(errno),
+      RESET
+    );
+    exit(EXIT_FAILURE);
+  } else {
+    // Parent process
+    if (line->background) {
+      push_background_job_to_list(pid);
+      return;
+    } else {
+      foreground_job_pid = pid;
+      waitpid(pid, NULL, 0);
+      foreground_job_pid = 0;
+    }
+  }
+} 
+
 /** Duplicate file descriptor. Return false if cannot. */
 void dup2_or_exit(int old_fd, int new_fd) {
   if (dup2(old_fd, new_fd) == -1) {
