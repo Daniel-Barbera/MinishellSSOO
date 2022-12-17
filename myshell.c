@@ -149,7 +149,7 @@ char * polite_directory_format(char * name) {
     return (name);
 }
 // Signal handlers
-/** Handles SIGINT: ignore, and print prompt. */ 
+/** Handles SIGINT: interrupt foreground process, and print prompt. */ 
 void sigint_handler() {
   signal_or_exit(SIGINT, sigint_handler);
   printf("\n");
