@@ -80,7 +80,7 @@ int main() {
       continue;
     }
     line = tokenize(input_buffer);
-    if (bad_command = check_if_all_commands_are_valid(line) && bad_command) {
+    if ((bad_command = check_if_all_commands_are_valid(line)) && bad_command) {
       fprintf(error_file, "%smsh: comando no encontrado: %s%s\n", BOLD_RED, bad_command, RESET);
       continue;
     }
