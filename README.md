@@ -6,13 +6,13 @@ Repositorio para el código de la práctica 1 de SSOO.
 ### Requisitos
 
 - [Tener Git instalado](https://git-scm.com/downloads) (en Linux, ya viene por defecto: ``git --version``)
-- [Tener un compilador de C instalado](https://gcc.gnu.org/) (en Linux ya viene por defecto: ``gcc --version``)
+- [Tener un compilador de C instalado](https://gcc.gnu.org/) (en Linux podría venir por defecto: ``gcc --version``)
 
 ### Cómo ejecutar el código
 
 - Clona el código de GitHub en una carpeta de tu gusto: ``git clone https://github.com/Daniel-Barbera/MinishellSSOO.git``
 - Una vez en la carpeta del repositorio (``cd MinishellSSOO``), compila el código. ``gcc myshell.c libparser_64.a -o msh.out``. En Windows, debes usar ``libparser.a`` en lugar de ``libparser_64.a``.
-- Ejecutar el código: ``./msh.out``
+- Ejecuta el código: ``./msh.out``
 
 ### Cómo editar el código
 
